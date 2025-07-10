@@ -2,7 +2,7 @@
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
-<title>XP 排行榜 · 分页版</title>
+<title>XP 排行榜 · 分页版 & 详情查询</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <style>
@@ -15,19 +15,24 @@
 body{margin:0;background:var(--c-bg);color:var(--c-text);
      font-family:-apple-system,Segoe UI,PingFang SC,Helvetica,Arial,sans-serif;}
 h2{margin:24px 0;text-align:center;color:var(--c-primary);}
-.container{max-width:820px;margin:0 auto 60px;padding:0 12px;}
+.container{max-width:880px;margin:0 auto 60px;padding:0 12px;}
 .progress{font-size:14px;color:var(--c-sub);margin-bottom:12px;}
 .table-wrap{border:1px solid #ddd;border-radius:10px;overflow:auto;max-height:70vh;}
 table{width:100%;border-collapse:collapse;font-size:14px;}
-th,td{padding:6px 8px;border-bottom:1px solid #e5e7eb;}
+th,td{padding:6px 8px;border-bottom:1px solid #e5e7eb;vertical-align:top;}
 th{position:sticky;top:0;background:var(--c-card);}
 .rank{width:60px;text-align:center;font-weight:700;}
-.addr{font-family:monospace;word-break:break-all;}
+.addr a{color:var(--c-primary);text-decoration:none;}
+.addr a:hover{text-decoration:underline;}
 .xp{text-align:right;font-variant-numeric:tabular-nums;}
+.btn-detail{background:none;border:none;color:var(--c-primary);cursor:pointer;}
+.detail-row{background:var(--c-card);}
+.detail-box{padding:10px 14px;font-size:13px;color:var(--c-text);}
+.detail-box b{display:inline-block;width:90px;}
+.error{color:#dc2626;}
 .nav{display:flex;gap:12px;align-items:center;justify-content:center;margin:16px 0;font-size:15px;}
-.nav input{width:80px;padding:6px 8px;font-size:15px;border:1px solid #ccc;border-radius:8px;text-align:center;}
-.nav button{padding:6px 14px;border:none;border-radius:8px;background:var(--c-primary);color:#fff;
-           cursor:pointer;}
+.nav input{width:90px;padding:6px 8px;font-size:15px;border:1px solid #ccc;border-radius:8px;text-align:center;}
+.nav button{padding:6px 14px;border:none;border-radius:8px;background:var(--c-primary);color:#fff;cursor:pointer;}
 .nav button:disabled{opacity:.5;cursor:default;}
 @media (prefers-color-scheme:dark){
   .table-wrap{border-color:#374151;}
@@ -42,7 +47,9 @@ th{position:sticky;top:0;background:var(--c-card);}
 
   <div class="table-wrap">
     <table>
-      <thead><tr><th class="rank">#</th><th>地址</th><th class="xp">XP</th></tr></thead>
+      <thead>
+        <tr><th class="rank">#</th><th>地址</th><th class="xp">XP</th><th>操作</th></tr>
+      </thead>
       <tbody id="tbody"></tbody>
     </table>
   </div>
@@ -75,11 +82,15 @@ fetch('data.txt')
   .then(txt=>{
     const lines = txt.trim().split(/\r?\n/);
     lines.forEach(line=>{
-      const [addr,xpStr] = line.trim().split(/\s+/);
-      if(addr && xpStr) data.push([addr, Number(xpStr)]);
+      // 允许格式：rank addr xp(带逗号)
+      const parts = line.trim().split(/\s+/);
+      if(parts.length>=3){
+        const addr = parts[1];
+        const xp   = Number(parts[2].replace(/,/g,''));
+        data.push([addr,xp]);
+      }
     });
-    /* 关键：按 XP 降序排序 */
-    data.sort((a,b)=>b[1]-a[1]);
+    data.sort((a,b)=>b[1]-a[1]); // 按 XP 降序
 
     totalPages = Math.ceil(data.length / PAGE_SIZE);
     totalEl.textContent = totalPages;
@@ -103,14 +114,88 @@ function renderPage(page){
   const rows = [];
   for(let i=start;i<end;i++){
     const [addr,xp] = data[i];
-    rows.push(`<tr><td class="rank">${i+1}</td><td class="addr">${addr}</td><td class="xp">${xp.toLocaleString()}</td></tr>`);
+    rows.push(`
+      <tr>
+        <td class="rank">${i+1}</td>
+        <td class="addr"><a href="https://debank.com/profile/${addr}" target="_blank">${addr}</a></td>
+        <td class="xp">${xp.toLocaleString()}</td>
+        <td><button class="btn-detail" data-addr="${addr}">🔍</button></td>
+      </tr>
+    `);
   }
   tbody.innerHTML = rows.join('');
-  // 滚动回顶部
-  document.querySelector('.table-wrap').scrollTop = 0;
+  tableWrap.scrollTop = 0;
 }
 
-/* ====== 事件绑定 ====== */
+/* ====== Fetch XP 详情 ====== */
+async function fetchDetail(addr){
+  const body = JSON.stringify({
+    operationName:"RewardsActivityTable",
+    query:`query RewardsActivityTable($address: Address!, $limit: Int!, $cursor: String) {
+      rewardActivity(address: $address, limit: $limit, cursor: $cursor) {
+        items { eventTime amount name tier direction }
+        nextPageCursor
+      }
+    }`,
+    variables:{address:addr,limit:25}
+  });
+  try{
+    const res = await fetch('https://gql.opensea.io/graphql',{
+      method:'POST',
+      headers:{
+        'content-type':'application/json',
+        'x-app-id':'os2-web'          // 必需 header
+      },
+      body
+    });
+    if(!res.ok) throw new Error(res.status+' '+res.statusText);
+    const json = await res.json();
+    return json.data?.rewardActivity?.items || [];
+  }catch(e){
+    throw e;
+  }
+}
+
+/* ====== 展开 / 收起逻辑 ====== */
+tbody.addEventListener('click',async e=>{
+  if(!e.target.matches('.btn-detail')) return;
+  const btn = e.target;
+  const addr = btn.dataset.addr;
+  const tr   = btn.closest('tr');
+
+  // 已展开则收起
+  if(tr.nextSibling && tr.nextSibling.classList.contains('detail-row')){
+    tr.parentNode.removeChild(tr.nextSibling);
+    return;
+  }
+
+  // 先插入占位行
+  const detailTr = document.createElement('tr');
+  detailTr.className='detail-row';
+  detailTr.innerHTML = `<td colspan="4" class="detail-box">加载中…</td>`;
+  tr.after(detailTr);
+
+  try{
+    const items = await fetchDetail(addr);
+    if(!items.length){
+      detailTr.querySelector('.detail-box').innerHTML = '无记录';
+      return;
+    }
+    const html = items.map(it=>`
+      <div>
+        <b>${new Date(it.eventTime).toLocaleString()}</b>
+        <span>+${it.amount}</span> —
+        <span>${it.name}</span>
+        <i style="color:var(--c-sub)">(${it.tier})</i>
+      </div>`).join('');
+    detailTr.querySelector('.detail-box').innerHTML = html;
+  }catch(err){
+    detailTr.querySelector('.detail-box').innerHTML =
+      `<span class="error">获取失败：${err.message}</span>`;
+  }
+});
+
+/* ====== 翻页事件 ====== */
 prevBtn.onclick = ()=>renderPage(currentPage-1);
 nextBtn.onclick = ()=>renderPage(currentPage+1);
 pageInput.onchange = ()=>renderPage(Number(pageInput.value));
