@@ -2,12 +2,12 @@
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
-<title>XP 排行榜 · 分页版 & 详情查询</title>
+<title>XP 排行榜 · 分页 & 明细弹窗</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <style>
 :root{
-  --c-bg:#f9f9f9;--c-card:#fff;--c-text:#222;--c-sub:#666;--c-primary:#0078d4;
+  --c-bg:#f9f9f9;--c-card:#fff;--c-text:#222;--c-sub:#666;--c-primary:#0078d4;--c-error:#dc2626;
 }
 @media (prefers-color-scheme:dark){
   :root{--c-bg:#111827;--c-card:#1f2937;--c-text:#f3f4f6;--c-sub:#9ca3af;}
@@ -25,18 +25,28 @@ th{position:sticky;top:0;background:var(--c-card);}
 .addr a{color:var(--c-primary);text-decoration:none;}
 .addr a:hover{text-decoration:underline;}
 .xp{text-align:right;font-variant-numeric:tabular-nums;}
-.btn-detail{background:none;border:none;color:var(--c-primary);cursor:pointer;}
-.detail-row{background:var(--c-card);}
-.detail-box{padding:10px 14px;font-size:13px;color:var(--c-text);}
-.detail-box b{display:inline-block;width:90px;}
-.error{color:#dc2626;}
-.nav{display:flex;gap:12px;align-items:center;justify-content:center;margin:16px 0;font-size:15px;}
+.btn-detail{background:none;border:none;color:var(--c-primary);cursor:pointer;font-size:16px}
+.nav{display:flex;gap:12px;align-items:center;justify-content:center;margin:18px 0;font-size:15px;}
 .nav input{width:90px;padding:6px 8px;font-size:15px;border:1px solid #ccc;border-radius:8px;text-align:center;}
 .nav button{padding:6px 14px;border:none;border-radius:8px;background:var(--c-primary);color:#fff;cursor:pointer;}
 .nav button:disabled{opacity:.5;cursor:default;}
+/* ─── Modal ─── */
+#modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);
+       justify-content:center;align-items:flex-start;overflow:auto;z-index:100}
+.modal-content{background:var(--c-card);border-radius:8px;padding:20px;margin:40px 12px;
+               box-shadow:0 6px 20px rgba(0,0,0,.4);max-width:900px;width:100%;}
+.modal-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+.modal-header h3{margin:0;font-size:18px}
+.modal-header button{background:none;border:none;font-size:24px;cursor:pointer}
+.detail-wrap{overflow-x:auto;max-height:70vh;}
+.detail-table{width:100%;border-collapse:collapse;font-size:14px;min-width:680px}
+.detail-table th,.detail-table td{border:1px solid #e5e7eb;padding:6px 8px}
+.detail-table tr:nth-child(even){background:rgba(0,0,0,.03)}
+.detail-msg{margin:10px 0;font-size:14px;text-align:center;color:var(--c-sub);}
 @media (prefers-color-scheme:dark){
   .table-wrap{border-color:#374151;}
   th,td{border-color:#374151;}
+  .detail-table th,.detail-table td{border-color:#374151;}
 }
 </style>
 </head>
@@ -46,10 +56,8 @@ th{position:sticky;top:0;background:var(--c-card);}
   <div class="progress" id="status">加载数据中…</div>
 
   <div class="table-wrap">
-    <table>
-      <thead>
-        <tr><th class="rank">#</th><th>地址</th><th class="xp">XP</th><th>操作</th></tr>
-      </thead>
+    <table id="mainTable">
+      <thead><tr><th class="rank">#</th><th>地址</th><th class="xp">XP</th><th>操作</th></tr></thead>
       <tbody id="tbody"></tbody>
     </table>
   </div>
@@ -61,144 +69,153 @@ th{position:sticky;top:0;background:var(--c-card);}
   </div>
 </div>
 
-<script>
-/* ====== 全局变量 ====== */
-const PAGE_SIZE = 10000;
-let data = [];          // [ [addr, xp], ... ]
-let totalPages = 0;
-let currentPage = 1;
+<!-- ─── Modal ─── -->
+<div id="modal">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3 id="modalTitle">明细</h3>
+      <button id="closeModal">×</button>
+    </div>
+    <div class="detail-wrap">
+      <table class="detail-table">
+        <thead><tr><th>日期</th><th>XP</th><th>任务</th><th>稀有度</th></tr></thead>
+        <tbody id="detailBody"></tbody>
+      </table>
+      <div id="detailMsg" class="detail-msg"></div>
+    </div>
+  </div>
+</div>
 
-/* ====== 元素 ====== */
-const tbody     = document.getElementById('tbody');
+<script>
+/* ===== 配置 ===== */
+const PAGE_SIZE = 10000;
+const GQL = 'https://gql.opensea.io/graphql';
+const HEADERS = {
+  'content-type':'application/json',
+  'x-app-id':'os2-web',
+  'accept':'application/graphql-response+json, application/json'
+};
+
+/* ===== 全局状态 ===== */
+let data=[], totalPages=0, curPage=1;
+
+/* ===== 元素 ===== */
 const statusEl  = document.getElementById('status');
-const pageInput = document.getElementById('pageInput');
+const tbody     = document.getElementById('tbody');
 const totalEl   = document.getElementById('totalPages');
+const pageInput = document.getElementById('pageInput');
 const prevBtn   = document.getElementById('prevBtn');
 const nextBtn   = document.getElementById('nextBtn');
+const tableDiv  = document.querySelector('.table-wrap');
 
-/* ====== 读取 TXT ====== */
+/* Modal */
+const modal     = document.getElementById('modal');
+const closeModal= document.getElementById('closeModal');
+const modalTitle= document.getElementById('modalTitle');
+const detailBody= document.getElementById('detailBody');
+const detailMsg = document.getElementById('detailMsg');
+
+/* ===== 辅助 ===== */
+function fmtNum(n){return Number(n).toLocaleString();}
+function xpClass(xp){return xp>=500?'xp-high':xp>=200?'xp-mid':'xp-low';}
+function translateTier(t){return {COMMON:'普通',UNCOMMON:'非常见',RARE:'稀有',EPIC:'史诗'}[t]||t;}
+function translateName(n){
+  const map=[
+    [/token swap on Ethereum.*\$5/i,'在以太坊兑换 ≥5 美元代币'],
+    [/token swap on Base.*\$5/i,'在 Base 兑换 ≥5 美元代币'],
+    [/token swap on any chain.*\$5/i,'任意链兑换 ≥5 美元代币'],
+    [/token swap on any chain.*\$50/i,'任意链兑换 ≥50 美元代币'],
+    [/Buy any NFT .*\\$5/i,'购买已验证合集 NFT（≥5 美元）'],
+    [/Abstract Partnership.*\\$10/i,'NFT NYC 活动 · Abstract 合作']
+  ];
+  for(const [re,cn] of map) if(re.test(n)) return cn;
+  return n;
+}
+
+/* ===== 读取 & 解析 TXT ===== */
 fetch('data.txt')
   .then(r=>r.text())
   .then(txt=>{
-    const lines = txt.trim().split(/\r?\n/);
-    lines.forEach(line=>{
-      // 允许格式：rank addr xp(带逗号)
-      const parts = line.trim().split(/\s+/);
+    const lines=txt.trim().split(/\r?\n/);
+    lines.forEach(l=>{
+      const parts=l.trim().split(/\s+/);
       if(parts.length>=3){
-        const addr = parts[1];
-        const xp   = Number(parts[2].replace(/,/g,''));
+        const addr=parts[1];
+        const xp=Number(parts[2].replace(/,/g,''));
         data.push([addr,xp]);
       }
     });
-    data.sort((a,b)=>b[1]-a[1]); // 按 XP 降序
-
-    totalPages = Math.ceil(data.length / PAGE_SIZE);
-    totalEl.textContent = totalPages;
-    statusEl.textContent = `共 ${data.length.toLocaleString()} 条 · 每页 ${PAGE_SIZE.toLocaleString()} 条`;
+    data.sort((a,b)=>b[1]-a[1]);
+    totalPages=Math.ceil(data.length/PAGE_SIZE);
+    totalEl.textContent=totalPages;
+    statusEl.textContent=`共 ${fmtNum(data.length)} 条 · 每页 ${PAGE_SIZE.toLocaleString()} 条`;
     renderPage(1);
   })
-  .catch(err=>{
-    statusEl.textContent = '加载失败：'+err.message;
-  });
+  .catch(e=>statusEl.textContent='加载失败：'+e.message);
 
-/* ====== 渲染指定页 ====== */
-function renderPage(page){
-  if(page<1||page>totalPages) return;
-  currentPage = page;
-  pageInput.value = page;
-  prevBtn.disabled = page===1;
-  nextBtn.disabled = page===totalPages;
-
-  const start = (page-1)*PAGE_SIZE;
-  const end   = Math.min(start + PAGE_SIZE, data.length);
-  const rows = [];
+/* ===== 分页渲染 ===== */
+function renderPage(p){
+  if(p<1||p>totalPages) return;
+  curPage=p; pageInput.value=p;
+  prevBtn.disabled=p===1; nextBtn.disabled=p===totalPages;
+  const start=(p-1)*PAGE_SIZE, end=Math.min(start+PAGE_SIZE,data.length);
+  const rows=[];
   for(let i=start;i<end;i++){
-    const [addr,xp] = data[i];
-    rows.push(`
-      <tr>
-        <td class="rank">${i+1}</td>
-        <td class="addr"><a href="https://debank.com/profile/${addr}" target="_blank">${addr}</a></td>
-        <td class="xp">${xp.toLocaleString()}</td>
-        <td><button class="btn-detail" data-addr="${addr}">🔍</button></td>
-      </tr>
-    `);
+    const [addr,xp]=data[i];
+    rows.push(`<tr>
+      <td class="rank">${i+1}</td>
+      <td class="addr"><a href="https://debank.com/profile/${addr}" target="_blank">${addr}</a></td>
+      <td class="xp ${xpClass(xp)}">${fmtNum(xp)}</td>
+      <td><button class="btn-detail" data-addr="${addr}">🔍</button></td>
+    </tr>`);
   }
-  tbody.innerHTML = rows.join('');
-  tableWrap.scrollTop = 0;
+  tbody.innerHTML=rows.join('');
+  tableDiv.scrollTop=0;
 }
 
-/* ====== Fetch XP 详情 ====== */
-async function fetchDetail(addr){
-  const body = JSON.stringify({
-    operationName:"RewardsActivityTable",
-    query:`query RewardsActivityTable($address: Address!, $limit: Int!, $cursor: String) {
-      rewardActivity(address: $address, limit: $limit, cursor: $cursor) {
-        items { eventTime amount name tier direction }
-        nextPageCursor
-      }
-    }`,
-    variables:{address:addr,limit:25}
-  });
-  try{
-    const res = await fetch('https://gql.opensea.io/graphql',{
-      method:'POST',
-      headers:{
-        'content-type':'application/json',
-        'x-app-id':'os2-web'          // 必需 header
-      },
-      body
-    });
-    if(!res.ok) throw new Error(res.status+' '+res.statusText);
-    const json = await res.json();
-    return json.data?.rewardActivity?.items || [];
-  }catch(e){
-    throw e;
-  }
-}
+/* ===== 翻页 ===== */
+prevBtn.onclick=()=>renderPage(curPage-1);
+nextBtn.onclick=()=>renderPage(curPage+1);
+pageInput.onchange=()=>renderPage(Number(pageInput.value));
 
-/* ====== 展开 / 收起逻辑 ====== */
-tbody.addEventListener('click',async e=>{
+/* ===== 详情弹窗 ===== */
+tbody.addEventListener('click',e=>{
   if(!e.target.matches('.btn-detail')) return;
-  const btn = e.target;
-  const addr = btn.dataset.addr;
-  const tr   = btn.closest('tr');
-
-  // 已展开则收起
-  if(tr.nextSibling && tr.nextSibling.classList.contains('detail-row')){
-    tr.parentNode.removeChild(tr.nextSibling);
-    return;
-  }
-
-  // 先插入占位行
-  const detailTr = document.createElement('tr');
-  detailTr.className='detail-row';
-  detailTr.innerHTML = `<td colspan="4" class="detail-box">加载中…</td>`;
-  tr.after(detailTr);
-
-  try{
-    const items = await fetchDetail(addr);
-    if(!items.length){
-      detailTr.querySelector('.detail-box').innerHTML = '无记录';
-      return;
-    }
-    const html = items.map(it=>`
-      <div>
-        <b>${new Date(it.eventTime).toLocaleString()}</b>
-        <span>+${it.amount}</span> —
-        <span>${it.name}</span>
-        <i style="color:var(--c-sub)">(${it.tier})</i>
-      </div>`).join('');
-    detailTr.querySelector('.detail-box').innerHTML = html;
-  }catch(err){
-    detailTr.querySelector('.detail-box').innerHTML =
-      `<span class="error">获取失败：${err.message}</span>`;
-  }
+  const addr=e.target.dataset.addr;
+  openModal(addr);
 });
+closeModal.onclick=()=>modal.style.display='none';
+window.addEventListener('click',e=>{if(e.target===modal) modal.style.display='none';});
 
-/* ====== 翻页事件 ====== */
-prevBtn.onclick = ()=>renderPage(currentPage-1);
-nextBtn.onclick = ()=>renderPage(currentPage+1);
-pageInput.onchange = ()=>renderPage(Number(pageInput.value));
+async function openModal(addr){
+  modalTitle.textContent=`地址 ${addr.slice(0,6)}…${addr.slice(-4)} 的 XP 记录`;
+  detailBody.innerHTML=''; detailMsg.textContent='加载中…'; modal.style.display='flex';
+  try{
+    const body={
+      operationName:'RewardsActivityTable',
+      query:`query RewardsActivityTable($address:Address!,$limit:Int!){
+        rewardActivity(address:$address,limit:$limit){
+          items{eventTime amount name tier}
+        }}`,
+      variables:{address:addr,limit:25}
+    };
+    const res=await fetch(GQL,{method:'POST',headers:HEADERS,body:JSON.stringify(body)});
+    if(!res.ok) throw new Error(res.status);
+    const items=(await res.json()).data?.rewardActivity?.items||[];
+    if(!items.length){detailMsg.textContent='无记录';return;}
+    items.forEach(it=>{
+      const tr=document.createElement('tr');
+      tr.innerHTML=`<td>${new Date(it.eventTime).toLocaleString('zh-CN',{hour12:false})}</td>
+                    <td>${it.amount}</td>
+                    <td>${translateName(it.name)}</td>
+                    <td>${translateTier(it.tier)}</td>`;
+      detailBody.appendChild(tr);
+    });
+    detailMsg.textContent='';
+  }catch(e){
+    detailMsg.innerHTML=`<span style="color:var(--c-error)">获取失败：${e.message}</span>`;
+  }
+}
 </script>
 </body>
 </html>
