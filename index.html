@@ -74,11 +74,13 @@ fetch('data.txt')
   .then(r=>r.text())
   .then(txt=>{
     const lines = txt.trim().split(/\r?\n/);
-    lines.forEach((line,i)=>{
+    lines.forEach(line=>{
       const [addr,xpStr] = line.trim().split(/\s+/);
       if(addr && xpStr) data.push([addr, Number(xpStr)]);
     });
-    // 如未预排序，可在此 sort：data.sort((a,b)=>b[1]-a[1]);
+    /* 关键：按 XP 降序排序 */
+    data.sort((a,b)=>b[1]-a[1]);
+
     totalPages = Math.ceil(data.length / PAGE_SIZE);
     totalEl.textContent = totalPages;
     statusEl.textContent = `共 ${data.length.toLocaleString()} 条 · 每页 ${PAGE_SIZE.toLocaleString()} 条`;
